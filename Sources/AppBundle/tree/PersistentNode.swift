@@ -43,9 +43,13 @@ indirect enum PersistentNode: Equatable, Hashable, Sendable {
 struct PersistentWindow: Equatable, Hashable, Sendable {
     /// Stable identity of the window (matches `Window.windowId`).
     let windowId: UInt32
+    /// Adaptive weight of this window within its parent tiling container.
+    /// Defaults to `1` for windows whose parent is not a tiling container.
+    let weight: CGFloat
 
-    init(windowId: UInt32) {
+    init(windowId: UInt32, weight: CGFloat = 1) {
         self.windowId = windowId
+        self.weight = weight
     }
 }
 
@@ -57,11 +61,16 @@ struct PersistentContainer: Equatable, Hashable, Sendable {
     let children: [PersistentNode]
     let layout: Layout
     let orientation: Orientation
+    /// Adaptive weight of this container within its parent tiling container.
+    /// Defaults to `1` for containers whose parent is not a tiling container
+    /// (e.g. the root tiling container of a workspace).
+    let weight: CGFloat
 
-    init(children: [PersistentNode], layout: Layout, orientation: Orientation) {
+    init(children: [PersistentNode], layout: Layout, orientation: Orientation, weight: CGFloat = 1) {
         self.children = children
         self.layout = layout
         self.orientation = orientation
+        self.weight = weight
     }
 
     /// Returns a **new** container identical to this one but with `child`
@@ -72,7 +81,7 @@ struct PersistentContainer: Equatable, Hashable, Sendable {
         var newChildren = children
         let insertAt = index < 0 ? newChildren.count : min(index, newChildren.count)
         newChildren.insert(child, at: insertAt)
-        return PersistentContainer(children: newChildren, layout: layout, orientation: orientation)
+        return PersistentContainer(children: newChildren, layout: layout, orientation: orientation, weight: weight)
     }
 
     /// Returns a **new** container with the child at position `index` removed,
@@ -82,7 +91,7 @@ struct PersistentContainer: Equatable, Hashable, Sendable {
     func removing(at index: Int) -> (PersistentContainer, PersistentNode) {
         var newChildren = children
         let removed = newChildren.remove(at: index)
-        return (PersistentContainer(children: newChildren, layout: layout, orientation: orientation), removed)
+        return (PersistentContainer(children: newChildren, layout: layout, orientation: orientation, weight: weight), removed)
     }
 
     /// Returns a **new** container with `oldChild` replaced by `newChild`, or
@@ -93,7 +102,7 @@ struct PersistentContainer: Equatable, Hashable, Sendable {
         guard let index = children.firstIndex(of: oldChild) else { return nil }
         var newChildren = children
         newChildren[index] = newChild
-        return PersistentContainer(children: newChildren, layout: layout, orientation: orientation)
+        return PersistentContainer(children: newChildren, layout: layout, orientation: orientation, weight: weight)
     }
 }
 
@@ -112,12 +121,13 @@ extension TreeNode {
     func toPersistentNode() -> PersistentNode? {
         switch nodeCases {
             case .window(let w):
-                return .window(PersistentWindow(windowId: w.windowId))
+                return .window(PersistentWindow(windowId: w.windowId, weight: _persistentWeight(of: w)))
             case .tilingContainer(let c):
                 return .tilingContainer(PersistentContainer(
                     children: c.children.compactMap { $0.toPersistentNode() },
                     layout: c.layout,
                     orientation: c.orientation,
+                    weight: _persistentWeight(of: c),
                 ))
             case .workspace,
                  .macosMinimizedWindowsContainer,
@@ -127,4 +137,12 @@ extension TreeNode {
                 return nil
         }
     }
+}
+
+/// Returns the adaptive weight of `node` within its parent tiling container,
+/// or `1` when the parent is not a tiling container.
+@MainActor
+private func _persistentWeight(of node: TreeNode) -> CGFloat {
+    guard let tilingParent = node.parent as? TilingContainer else { return 1 }
+    return node.getWeight(tilingParent.orientation)
 }
