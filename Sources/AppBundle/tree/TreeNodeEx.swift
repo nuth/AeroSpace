@@ -16,15 +16,19 @@ extension TreeNode {
         return result
     }
 
+    @MainActor
     var ownIndex: Int? {
         guard let parent else { return nil }
         return parent.children.firstIndex(of: self).orDie()
     }
 
+    @MainActor
     var parents: [NonLeafTreeNodeObject] { parent.flatMap { [$0] + $0.parents } ?? [] }
+    @MainActor
     var parentsWithSelf: [TreeNode] { parent.flatMap { [self] + $0.parentsWithSelf } ?? [self] }
 
     /// Also see visualWorkspace
+    @MainActor
     var nodeWorkspace: Workspace? {
         self as? Workspace ?? parent?.nodeWorkspace
     }
@@ -79,6 +83,7 @@ extension TreeNode {
     }
 
     /// Returns closest parent that has children in the specified direction relative to `self`
+    @MainActor
     func closestParent(
         hasChildrenInDirection direction: CardinalDirection,
         withLayout layout: Layout?,

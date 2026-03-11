@@ -1,11 +1,20 @@
 import AppKit
 import Common
 
+/// The base class for all nodes in the window layout tree.
+///
+/// This tree is **single-linked**: nodes only hold references to their children,
+/// never to their parent. The parent of any node is found by searching from the
+/// global set of tree roots (all workspaces plus the global special containers).
+///
+/// Each modification to the tree (bind / unbind) is an atomic operation that
+/// updates exactly one parent's children list, making stale parent-reference
+/// bugs impossible.
 open class TreeNode: Equatable, AeroAny {
     private var _children: [TreeNode] = []
     var children: [TreeNode] { _children }
-    fileprivate final weak var _parent: NonLeafTreeNodeObject? = nil
-    final var parent: NonLeafTreeNodeObject? { _parent }
+    // NOTE: No _parent back-reference. The tree is single-linked (children only).
+    //       Parent lookup uses _findParentNode(), searching from the global roots.
     private var adaptiveWeight: CGFloat
     private let _mruChildren: MruStack<TreeNode> = MruStack()
     // Usages:
@@ -17,8 +26,10 @@ open class TreeNode: Equatable, AeroAny {
     // - drag window with mouse
     // - move-mouse command
     var lastAppliedLayoutPhysicalRect: Rect? = nil // with real inner gaps
-    final var unboundStacktrace: String? = nil
-    var isBound: Bool { parent != nil } // todo drop, once https://github.com/nikitabobko/AeroSpace/issues/1215 is fixed
+
+    /// Whether this node is currently bound to a parent container.
+    // todo drop, once https://github.com/nikitabobko/AeroSpace/issues/1215 is fixed
+    @MainActor var isBound: Bool { parent != nil }
 
     @MainActor
     init(parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
@@ -31,6 +42,7 @@ open class TreeNode: Equatable, AeroAny {
     }
 
     /// See: ``getWeight(_:)``
+    @MainActor
     func setWeight(_ targetOrientation: Orientation, _ newValue: CGFloat) {
         guard let parent else { die("Can't change weight if TreeNode doesn't have parent") }
         switch getChildParentRelation(child: self, parent: parent) {
@@ -85,8 +97,7 @@ open class TreeNode: Equatable, AeroAny {
             self.adaptiveWeight = adaptiveWeight
         }
         newParent._children.insert(self, at: index != INDEX_BIND_LAST ? index : newParent._children.count)
-        _parent = newParent
-        unboundStacktrace = nil
+        // Single-linked: we do NOT store a back-reference to newParent here.
         // todo consider disabling automatic mru propogation
         // 1. "floating windows" in FocusCommand break the MRU because of that :(
         // 2. Misbehaved apps that abuse real window as popups https://github.com/nikitabobko/AeroSpace/issues/106 (the
@@ -95,29 +106,72 @@ open class TreeNode: Equatable, AeroAny {
         return result
     }
 
+    @MainActor
     private func unbindIfBound() -> BindingData? {
-        guard let _parent else { return nil }
-
-        let index = _parent._children.remove(element: self) ?? dieT("Can't find child in its parent")
-        check(_parent._mruChildren.remove(self))
-        self._parent = nil
-        unboundStacktrace = getStringStacktrace()
-
-        return BindingData(parent: _parent, adaptiveWeight: adaptiveWeight, index: index)
+        guard let currentParent = _findParentNode() else { return nil }
+        // `NonLeafTreeNodeObject: TreeNode` is enforced by the protocol declaration
+        // in TreeNodeCases.swift, so this cast is always safe.
+        let parentNode = currentParent as! TreeNode
+        let index = parentNode._children.remove(element: self) ?? dieT("Can't find child in its parent")
+        check(parentNode._mruChildren.remove(self))
+        return BindingData(parent: currentParent, adaptiveWeight: adaptiveWeight, index: index)
     }
 
+    @MainActor
     func markAsMostRecentChild() {
-        guard let _parent else { return }
-        _parent._mruChildren.pushOrRaise(self)
-        _parent.markAsMostRecentChild()
+        guard let currentParent = _findParentNode() else { return }
+        // `NonLeafTreeNodeObject: TreeNode` is enforced by the protocol declaration
+        // in TreeNodeCases.swift, so this cast is always safe.
+        let parentNode = currentParent as! TreeNode
+        parentNode._mruChildren.pushOrRaise(self)
+        currentParent.markAsMostRecentChild()
     }
 
     var mostRecentChild: TreeNode? { _mruChildren.mostRecent ?? children.last }
 
+    @MainActor
     @discardableResult
     func unbindFromParent() -> BindingData {
-        unbindIfBound() ?? dieT("\(self) is already unbound. The stacktrace where it was unbound:\n\(unboundStacktrace ?? "nil")")
+        unbindIfBound() ?? dieT("\(self) is already unbound (not present in any tree root)")
     }
+
+    // ── Single-linked tree navigation ────────────────────────────────────────
+    // Because there is no stored _parent, we derive the parent on demand by
+    // searching the global set of tree roots.  AeroSpace trees are small
+    // (typically < 100 nodes across all workspaces), so an O(n) search is
+    // fast enough.  The hot layout path traverses top-down via children and
+    // never calls .parent, so performance is not a concern in practice.
+
+    /// The parent of this node, found by searching from the global tree roots.
+    /// Returns nil when the node is not bound to any tree.
+    @MainActor
+    final var parent: NonLeafTreeNodeObject? { _findParentNode() }
+
+    /// Search every global tree root for a node whose children list contains self.
+    @MainActor
+    private func _findParentNode() -> NonLeafTreeNodeObject? {
+        for workspace in Workspace.all {
+            if let found = _searchForParent(in: workspace) { return found }
+        }
+        if let found = _searchForParent(in: macosMinimizedWindowsContainer) { return found }
+        if let found = _searchForParent(in: macosPopupWindowsContainer) { return found }
+        return nil
+    }
+
+    /// Recursively search the subtree rooted at `container` for a node whose
+    /// children list contains `self`.  Returns the matching parent, or nil.
+    @MainActor
+    private func _searchForParent(in container: NonLeafTreeNodeObject) -> NonLeafTreeNodeObject? {
+        if container.children.contains(where: { $0 === self }) { return container }
+        for child in container.children {
+            if let nonLeaf = child as? NonLeafTreeNodeObject {
+                if let found = _searchForParent(in: nonLeaf) { return found }
+            }
+        }
+        return nil
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     nonisolated public static func == (lhs: TreeNode, rhs: TreeNode) -> Bool {
         lhs === rhs

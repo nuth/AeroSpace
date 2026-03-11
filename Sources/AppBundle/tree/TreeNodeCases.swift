@@ -56,6 +56,7 @@ extension TreeNode {
         }
     }
 
+    @MainActor
     func tilingTreeNodeCasesOrDie() -> TilingTreeNodeCases {
         if let window = self as? Window {
             return .window(window)
