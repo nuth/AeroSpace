@@ -5,6 +5,25 @@ import XCTest
 final class TreeNodeTest: XCTestCase {
     override func setUp() async throws { setUpWorkspacesForTests() }
 
+    // Verify the single-linked tree invariant: parent is derived from the tree
+    // structure (children lists), not stored as a back-reference on the node.
+    // Moving a subtree to a different parent must immediately be reflected in
+    // the `.parent` computed property of every node in that subtree.
+    func testSingleLinkedTree_parentReflectsChildrenList() {
+        let wsA = Workspace.get(byName: "A")
+        let wsB = Workspace.get(byName: "B")
+        let window = TestWindow.new(id: 1, parent: wsA.rootTilingContainer)
+
+        XCTAssertTrue(window.parent === wsA.rootTilingContainer)
+
+        // Rebind window to the other workspace's tiling root
+        window.bind(to: wsB.rootTilingContainer, adaptiveWeight: 1, index: INDEX_BIND_LAST)
+
+        XCTAssertTrue(window.parent === wsB.rootTilingContainer)
+        XCTAssertFalse(wsA.rootTilingContainer.children.contains(window))
+        XCTAssertTrue(wsB.rootTilingContainer.children.contains(window))
+    }
+
     func testChildParentCyclicReferenceMemoryLeak() {
         let workspace = Workspace.get(byName: name) // Don't cache root node
         let window = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)

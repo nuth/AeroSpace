@@ -170,7 +170,7 @@ private func toLayoutString(tc: TilingContainer) -> String {
     }
 }
 
-private func toLayoutResult(w: Window) -> Result<Primitive, String> {
+@MainActor private func toLayoutResult(w: Window) -> Result<Primitive, String> {
     guard let parent = w.parent else { return .failure("NULL-PARENT") }
     return switch getChildParentRelation(child: w, parent: parent) {
         case .tiling(let tc): .success(.string(toLayoutString(tc: tc)))
