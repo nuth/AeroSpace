@@ -278,4 +278,87 @@ final class TreeNodeTest: XCTestCase {
         XCTAssertEqual(nested.children[0], .window(PersistentWindow(windowId: 2)))
         XCTAssertEqual(nested.children[1], .window(PersistentWindow(windowId: 3)))
     }
+
+    // Weight of a window must be captured in the snapshot.
+    func testPersistentWindow_weightIsCaptured() {
+        let workspace = Workspace.get(byName: name)
+        let root = workspace.rootTilingContainer
+        // Use distinct explicit weights so we can tell them apart.
+        TestWindow.new(id: 1, parent: root, adaptiveWeight: 2)
+        TestWindow.new(id: 2, parent: root, adaptiveWeight: 3)
+
+        guard case .tilingContainer(let snapshot) = root.toPersistentNode() else {
+            XCTFail("Expected .tilingContainer"); return
+        }
+
+        guard case .window(let w1) = snapshot.children[0],
+              case .window(let w2) = snapshot.children[1]
+        else {
+            XCTFail("Expected two window children"); return
+        }
+        XCTAssertEqual(w1.windowId, 1)
+        XCTAssertEqual(w1.weight, 2)
+        XCTAssertEqual(w2.windowId, 2)
+        XCTAssertEqual(w2.weight, 3)
+    }
+
+    // Weight of a nested container must be captured in the snapshot.
+    func testPersistentContainer_weightIsCaptured() {
+        let workspace = Workspace.get(byName: name)
+        let root = workspace.rootTilingContainer
+        TilingContainer.newVTiles(parent: root, adaptiveWeight: 4).apply {
+            TestWindow.new(id: 1, parent: $0)
+        }
+
+        guard case .tilingContainer(let snapshot) = root.toPersistentNode(),
+              case .tilingContainer(let nested) = snapshot.children[0]
+        else {
+            XCTFail("Expected nested .tilingContainer"); return
+        }
+        XCTAssertEqual(nested.weight, 4)
+    }
+
+    // PersistentContainer.adding must preserve the container's own weight.
+    func testPersistentContainer_addingPreservesWeight() {
+        let original = PersistentContainer(
+            children: [.window(PersistentWindow(windowId: 1))],
+            layout: .tiles,
+            orientation: .h,
+            weight: 7,
+        )
+        let newChild = PersistentNode.window(PersistentWindow(windowId: 2))
+        let updated = original.adding(newChild, at: INDEX_BIND_LAST)
+        XCTAssertEqual(updated.weight, original.weight)
+        XCTAssertEqual(original.children.count, 1) // original unchanged
+    }
+
+    // PersistentContainer.removing must preserve the container's own weight.
+    func testPersistentContainer_removingPreservesWeight() {
+        let original = PersistentContainer(
+            children: [
+                .window(PersistentWindow(windowId: 1)),
+                .window(PersistentWindow(windowId: 2)),
+            ],
+            layout: .tiles,
+            orientation: .h,
+            weight: 5,
+        )
+        let (reduced, _) = original.removing(at: 0)
+        XCTAssertEqual(reduced.weight, original.weight)
+        XCTAssertEqual(original.children.count, 2) // original unchanged
+    }
+
+    // PersistentContainer.replacing must preserve the container's own weight.
+    func testPersistentContainer_replacingPreservesWeight() {
+        let child = PersistentNode.window(PersistentWindow(windowId: 1))
+        let original = PersistentContainer(
+            children: [child],
+            layout: .tiles,
+            orientation: .h,
+            weight: 6,
+        )
+        let replacement = PersistentNode.window(PersistentWindow(windowId: 99))
+        let updated = original.replacing(child, with: replacement)
+        XCTAssertEqual(updated?.weight, original.weight)
+    }
 }
