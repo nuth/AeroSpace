@@ -21,18 +21,18 @@ struct FrozenMonitor: Sendable {
 struct FrozenWorkspace: Sendable {
     let name: String
     let monitor: FrozenMonitor // todo drop this property, once monitor to workspace assignment migrates to TreeNode
-    let rootTilingNode: FrozenContainer
-    let floatingWindows: [FrozenWindow]
-    let macosUnconventionalWindows: [FrozenWindow]
+    let rootTilingNode: PersistentContainer
+    let floatingWindows: [PersistentWindow]
+    let macosUnconventionalWindows: [PersistentWindow]
 
     @MainActor init(_ workspace: Workspace) {
         name = workspace.name
         monitor = FrozenMonitor(workspace.workspaceMonitor)
-        rootTilingNode = FrozenContainer(workspace.rootTilingContainer)
-        floatingWindows = workspace.floatingWindows.map(FrozenWindow.init)
+        rootTilingNode = workspace.rootTilingContainer.toPersistentContainer()
+        floatingWindows = workspace.floatingWindows.map { PersistentWindow(windowId: $0.windowId) }
         macosUnconventionalWindows =
-            workspace.macOsNativeHiddenAppsWindowsContainer.children.map { FrozenWindow($0 as! Window) } +
-            workspace.macOsNativeFullscreenWindowsContainer.children.map { FrozenWindow($0 as! Window) }
+            workspace.macOsNativeHiddenAppsWindowsContainer.children.map { PersistentWindow(windowId: ($0 as! Window).windowId) } +
+            workspace.macOsNativeFullscreenWindowsContainer.children.map { PersistentWindow(windowId: ($0 as! Window).windowId) }
     }
 }
 
@@ -62,15 +62,15 @@ struct FrozenWorkspace: Sendable {
             .singleOrNil()?
             .setActiveWorkspace(workspace)
         for frozenWindow in frozenWorkspace.floatingWindows {
-            MacWindow.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
+            MacWindow.get(byId: frozenWindow.windowId)?.bindAsFloatingWindow(to: workspace)
         }
         for frozenWindow in frozenWorkspace.macosUnconventionalWindows { // Will get fixed by normalizations
-            MacWindow.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
+            MacWindow.get(byId: frozenWindow.windowId)?.bindAsFloatingWindow(to: workspace)
         }
         let prevRoot = workspace.rootTilingContainer // Save prevRoot into a variable to avoid it being garbage collected earlier than needed
         let potentialOrphans = prevRoot.allLeafWindowsRecursive
         prevRoot.unbindFromParent()
-        restoreTreeRecursive(frozenContainer: frozenWorkspace.rootTilingNode, parent: workspace, index: INDEX_BIND_LAST)
+        restoreTreeRecursive(persistentContainer: frozenWorkspace.rootTilingNode, parent: workspace, index: INDEX_BIND_LAST)
         for window in (potentialOrphans - workspace.rootTilingContainer.allLeafWindowsRecursive) {
             try await window.relayoutWindow(on: workspace, forceTile: true)
         }
@@ -86,24 +86,24 @@ struct FrozenWorkspace: Sendable {
 
 @discardableResult
 @MainActor
-private func restoreTreeRecursive(frozenContainer: FrozenContainer, parent: NonLeafTreeNodeObject, index: Int) -> Bool {
+private func restoreTreeRecursive(persistentContainer: PersistentContainer, parent: NonLeafTreeNodeObject, index: Int) -> Bool {
     let container = TilingContainer(
         parent: parent,
-        adaptiveWeight: frozenContainer.weight,
-        frozenContainer.orientation,
-        frozenContainer.layout,
+        adaptiveWeight: persistentContainer.weight,
+        persistentContainer.orientation,
+        persistentContainer.layout,
         index: index,
     )
 
-    for (index, child) in frozenContainer.children.enumerated() {
+    for (index, child) in persistentContainer.children.enumerated() {
         switch child {
             case .window(let w):
                 // Stop the loop if can't find the window, because otherwise all the subsequent windows will have incorrect index
-                guard let window = MacWindow.get(byId: w.id) else { return false }
+                guard let window = MacWindow.get(byId: w.windowId) else { return false }
                 window.bind(to: container, adaptiveWeight: w.weight, index: index)
-            case .container(let c):
+            case .tilingContainer(let c):
                 // There is no reason to continue
-                if !restoreTreeRecursive(frozenContainer: c, parent: container, index: index) { return false }
+                if !restoreTreeRecursive(persistentContainer: c, parent: container, index: index) { return false }
         }
     }
     return true

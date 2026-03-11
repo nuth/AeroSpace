@@ -146,3 +146,18 @@ private func _persistentWeight(of node: TreeNode) -> CGFloat {
     guard let tilingParent = node.parent as? TilingContainer else { return 1 }
     return node.getWeight(tilingParent.orientation)
 }
+
+extension TilingContainer {
+    /// Capture this container and its subtree as an immutable `PersistentContainer`.
+    ///
+    /// This is a convenience wrapper around `toPersistentNode()` for call sites
+    /// that already know they have a `TilingContainer` and need a `PersistentContainer`
+    /// directly (e.g. when building workspace snapshots).
+    @MainActor
+    func toPersistentContainer() -> PersistentContainer {
+        switch toPersistentNode() {
+            case .tilingContainer(let c): return c
+            case .window, nil: die("TilingContainer must produce .tilingContainer PersistentNode")
+        }
+    }
+}
